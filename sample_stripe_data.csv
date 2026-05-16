@@ -1,0 +1,7 @@
+id,created,amount,currency,fee,net,type,description,source_id,customer_id
+ch_1234567890,2024-01-15 14:30:00,5000,usd,175,4825,charge,Payment for Order #1001,src_123,cus_456
+ch_1234567891,2024-01-15 16:45:00,2500,usd,103,2397,charge,Subscription Payment,src_124,cus_457
+ch_1234567892,2024-01-16 09:15:00,-1000,usd,0,1000,refund,Refund for Order #1001,src_123,cus_456
+ch_1234567893,2024-01-16 11:30:00,7500,usd,248,7252,charge,Consulting Services,src_125,cus_458
+ch_1234567894,2024-01-17 13:20:00,3200,usd,123,3077,charge,Product Purchase,src_126,cus_459
+payout_123456,2024-01-17 23:59:59,14551,usd,0,14551,payout,Transfer to bank account,,,

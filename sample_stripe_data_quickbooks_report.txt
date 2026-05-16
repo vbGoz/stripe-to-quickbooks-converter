@@ -1,0 +1,11 @@
+Stripe to QuickBooks Conversion Summary
+=====================================
+
+Total Transactions: 5
+Total Gross Amount: $172.00
+Total Fees: $6.49
+Total Net Amount: $185.51
+
+Transaction Breakdown by Type:
+- charge: 4 transactions, $182.00 gross, $6.49 fees
+- refund: 1 transactions, $-10.00 gross, $0.00 fees

@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Get the directory where this app is located
+APP_DIR="$(dirname "$0")/../.."
+cd "$APP_DIR"
+
+# Create a simple AppleScript GUI - select file, convert, done
+osascript << 'APPLESCRIPT'
+-- Stripe to QuickBooks Converter GUI
+set inputFile to ""
+
+-- Main dialog
+display dialog "Stripe to QuickBooks Converter
+
+Convert your Stripe payout CSV files to QuickBooks format with automatic fee accounting.
+
+• Separates transaction fees from income
+• Creates QuickBooks-ready CSV format
+• Ready to import directly into QuickBooks
+
+Click 'Select File' to choose your Stripe CSV file." buttons {"Quit", "Select File"} default button "Select File" with title "Stripe to QuickBooks Converter"
+
+if button returned of result is "Select File" then
+    -- File selection dialog
+    try
+        set inputFile to (choose file with prompt "Select your Stripe payout CSV file:" of type {"csv", "txt"}) as string
+        set inputFile to POSIX path of inputFile
+        
+        -- Show progress immediately after file selection
+        display notification "Converting Stripe CSV to QuickBooks format..." with title "Stripe Converter"
+        
+        -- Run the conversion
+        set command to "cd '" & (do shell script "dirname " & quoted form of inputFile) & "' && '" & (POSIX path of (path to me)) & "/../stripe_converter' '" & inputFile & "' -v"
+        
+        try
+            set result to do shell script command
+            
+            -- Success dialog
+            display dialog "✅ Conversion Completed Successfully!
+
+Your Stripe transactions have been converted to QuickBooks format with fees properly separated.
+
+The QuickBooks CSV file is ready to import.
+
+" & result buttons {"Open Output Folder", "OK"} default button "Open Output Folder" with title "Success!"
+            
+            if button returned of result is "Open Output Folder" then
+                do shell script "open '" & (do shell script "dirname " & quoted form of inputFile) & "'"
+            end if
+            
+        on error errorMessage
+            -- Error dialog
+            display dialog "❌ Conversion Failed
+
+Error: " & errorMessage & "
+
+Make sure your file is a valid Stripe CSV export." buttons {"OK"} default button "OK" with icon stop with title "Error"
+        end try
+        
+    on error
+        -- User cancelled file selection
+        return
+    end try
+end if
+APPLESCRIPT
+

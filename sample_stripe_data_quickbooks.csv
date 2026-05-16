@@ -1,0 +1,10 @@
+Date,Description,Amount,Category,Account,Memo
+"01/15/2024","Payment for Order #1001","50.00","Sales Income","Stripe","Stripe Transaction ID: ch_1234567890"
+"01/15/2024","Stripe Processing Fee - Payment for Order #1001","-1.75","Payment Processing Fees","Stripe","Fee for transaction: ch_1234567890"
+"01/15/2024","Subscription Payment","25.00","Sales Income","Stripe","Stripe Transaction ID: ch_1234567891"
+"01/15/2024","Stripe Processing Fee - Subscription Payment","-1.03","Payment Processing Fees","Stripe","Fee for transaction: ch_1234567891"
+"01/16/2024","Refund for Order #1001","-10.00","Refunds","Stripe","Stripe Transaction ID: ch_1234567892"
+"01/16/2024","Consulting Services","75.00","Sales Income","Stripe","Stripe Transaction ID: ch_1234567893"
+"01/16/2024","Stripe Processing Fee - Consulting Services","-2.48","Payment Processing Fees","Stripe","Fee for transaction: ch_1234567893"
+"01/17/2024","Product Purchase","32.00","Sales Income","Stripe","Stripe Transaction ID: ch_1234567894"
+"01/17/2024","Stripe Processing Fee - Product Purchase","-1.23","Payment Processing Fees","Stripe","Fee for transaction: ch_1234567894"

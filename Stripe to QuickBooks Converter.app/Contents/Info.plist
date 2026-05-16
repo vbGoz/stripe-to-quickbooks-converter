@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>StripeConverter</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.stripe.quickbooks.converter</string>
+    <key>CFBundleName</key>
+    <string>Stripe to QuickBooks Converter</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleDisplayName</key>
+    <string>Stripe to QuickBooks Converter</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.finance</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>csv</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>CSV File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSTypeIsPackage</key>
+            <false/>
+        </dict>
+    </array>
+</dict>
+</plist>

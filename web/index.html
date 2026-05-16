@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stripe to QuickBooks Converter</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e3e6eb;
+    --muted: #6b7280;
+    --text: #1f2937;
+    --accent: #635bff;
+    --accent-hover: #4f46e5;
+    --success: #10b981;
+    --error: #dc2626;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 12px rgba(0,0,0,.04);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    min-height: 100vh;
+  }
+  main {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 40px 20px 80px;
+  }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .drop {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 40px 20px;
+    text-align: center;
+    background: #fff;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.dragover {
+    border-color: var(--accent);
+    background: #f5f4ff;
+  }
+  .drop strong { display: block; margin-bottom: 4px; }
+  .drop small { color: var(--muted); }
+  input[type=file] { display: none; }
+  button {
+    font: inherit;
+    padding: 9px 16px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  button:hover { background: #f3f4f6; }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    background: #fafbfc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 240px;
+  }
+  th { background: #fafbfc; font-weight: 600; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  td.amount { font-variant-numeric: tabular-nums; text-align: right; }
+  td.amount.neg { color: var(--error); }
+  .scroll { overflow-x: auto; }
+  .banner {
+    padding: 10px 14px;
+    border-radius: 7px;
+    margin-bottom: 16px;
+  }
+  .banner.error { background: #fef2f2; color: var(--error); border: 1px solid #fecaca; }
+  .banner.info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+  .hidden { display: none; }
+  .breakdown {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    white-space: pre;
+    background: #fafbfc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  footer {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    margin-top: 32px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Stripe to QuickBooks Converter</h1>
+  <p class="sub">Upload a Stripe payout CSV and get a QuickBooks-ready CSV with fees split into separate entries. Files are processed entirely in your browser &mdash; nothing is uploaded.</p>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <div class="panel">
+    <label for="fileInput" class="drop" id="dropZone">
+      <strong>Drop a Stripe CSV here, or click to choose a file</strong>
+      <small>Expected columns: id, created, amount, currency, fee, net, type, description, source_id, customer_id</small>
+      <input type="file" id="fileInput" accept=".csv,text/csv">
+    </label>
+  </div>
+
+  <section id="results" class="hidden">
+    <div class="panel">
+      <div class="summary" id="summary"></div>
+      <div class="actions">
+        <button id="downloadCsv" class="primary">Download QuickBooks CSV</button>
+        <button id="downloadReport">Download Summary Report</button>
+        <button id="reset">Convert Another File</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin:0 0 10px;font-size:15px;">Breakdown by Type</h3>
+      <pre id="breakdown" class="breakdown"></pre>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin:0 0 10px;font-size:15px;">Preview <span id="previewNote" style="color:var(--muted);font-weight:400;font-size:13px;"></span></h3>
+      <div class="scroll">
+        <table id="preview">
+          <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Account</th><th>Memo</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer>Runs entirely in your browser. No file ever leaves this page.</footer>
+</main>
+
+<script>
+"use strict";
+
+// ---------- CSV parsing (quote-aware, matches Swift parseCSVLine semantics) ----------
+function parseCSVLine(line) {
+  const values = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      inQuotes = !inQuotes;
+    } else if (c === "," && !inQuotes) {
+      values.push(cur.trim());
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  values.push(cur.trim());
+  return values;
+}
+
+function parseStripeCSV(text) {
+  // Strip UTF-8 BOM if present.
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+  if (lines.length === 0) throw new Error("Empty file");
+  const headers = lines[0].split(",").map(h => h.trim());
+  const required = ["id","created","amount","fee","net","currency","type","description"];
+  for (const r of required) {
+    if (!headers.includes(r)) {
+      throw new Error(`Missing required column: ${r}`);
+    }
+  }
+
+  const transactions = [];
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCSVLine(lines[i]);
+    if (values.length !== headers.length) continue;
+    const row = {};
+    for (let j = 0; j < headers.length; j++) row[headers[j]] = values[j];
+    const tx = buildStripeTx(row);
+    if (tx) transactions.push(tx);
+  }
+  return transactions;
+}
+
+function buildStripeTx(row) {
+  const created = parseStripeDate(row.created);
+  const amount = Number(row.amount);
+  const fee = Number(row.fee);
+  const net = Number(row.net);
+  if (!created || !Number.isFinite(amount) || !Number.isFinite(fee) || !Number.isFinite(net)) {
+    return null;
+  }
+  return {
+    id: row.id,
+    created,
+    amount: amount / 100,
+    currency: row.currency,
+    fee: fee / 100,
+    net: net / 100,
+    type: row.type,
+    description: row.description,
+    sourceId: row.source_id || null,
+    customerId: row.customer_id || null,
+  };
+}
+
+// "yyyy-MM-dd HH:mm:ss" in local time, matching Swift's default DateFormatter timezone.
+function parseStripeDate(s) {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function formatMMDDYYYY(d) {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+// ---------- Conversion ----------
+function categorize(type) {
+  switch ((type || "").toLowerCase()) {
+    case "charge": return "Sales Income";
+    case "refund": return "Refunds";
+    case "payout": return "Transfer to Bank";
+    case "adjustment": return "Adjustments";
+    case "application_fee": return "Application Fees";
+    case "application_fee_refund": return "Application Fee Refunds";
+    case "transfer": return "Transfers";
+    default: return "Other Income";
+  }
+}
+
+function convertToQuickBooks(stripeTxs) {
+  const out = [];
+  for (const s of stripeTxs) {
+    out.push({
+      date: s.created,
+      description: s.description,
+      amount: s.amount,
+      category: categorize(s.type),
+      account: "Stripe",
+      memo: `Stripe Transaction ID: ${s.id}`,
+    });
+    if (s.fee > 0) {
+      out.push({
+        date: s.created,
+        description: `Stripe Processing Fee - ${s.description}`,
+        amount: -s.fee,
+        category: "Payment Processing Fees",
+        account: "Stripe",
+        memo: `Fee for transaction: ${s.id}`,
+      });
+    }
+  }
+  return out;
+}
+
+function qbCSV(rows) {
+  const headers = ["Date","Description","Amount","Category","Account","Memo"];
+  let out = headers.join(",") + "\n";
+  for (const r of rows) {
+    const fields = [
+      formatMMDDYYYY(r.date),
+      r.description,
+      r.amount.toFixed(2),
+      r.category,
+      r.account,
+      r.memo || "",
+    ];
+    out += fields.map(v => `"${v}"`).join(",") + "\n";
+  }
+  return out;
+}
+
+function summaryReport(stripeTxs) {
+  const totalGross = stripeTxs.reduce((a, t) => a + t.amount, 0);
+  const totalFees = stripeTxs.reduce((a, t) => a + t.fee, 0);
+  const totalNet = stripeTxs.reduce((a, t) => a + t.net, 0);
+  const grouped = new Map();
+  for (const t of stripeTxs) {
+    if (!grouped.has(t.type)) grouped.set(t.type, []);
+    grouped.get(t.type).push(t);
+  }
+  const types = [...grouped.keys()].sort();
+  let breakdown = "";
+  for (const type of types) {
+    const list = grouped.get(type);
+    const g = list.reduce((a, t) => a + t.amount, 0);
+    const f = list.reduce((a, t) => a + t.fee, 0);
+    breakdown += `\n- ${type}: ${list.length} transactions, $${g.toFixed(2)} gross, $${f.toFixed(2)} fees`;
+  }
+  return `Stripe to QuickBooks Conversion Summary
+=====================================
+
+Total Transactions: ${stripeTxs.length}
+Total Gross Amount: $${totalGross.toFixed(2)}
+Total Fees: $${totalFees.toFixed(2)}
+Total Net Amount: $${totalNet.toFixed(2)}
+
+Transaction Breakdown by Type:${breakdown}`;
+}
+
+// ---------- UI ----------
+const dropZone = document.getElementById("dropZone");
+const fileInput = document.getElementById("fileInput");
+const banner = document.getElementById("banner");
+const results = document.getElementById("results");
+const summaryEl = document.getElementById("summary");
+const breakdownEl = document.getElementById("breakdown");
+const previewBody = document.querySelector("#preview tbody");
+const previewNote = document.getElementById("previewNote");
+const PREVIEW_LIMIT = 50;
+
+let lastOutput = null; // { csv, report, baseName }
+
+["dragenter","dragover"].forEach(ev =>
+  dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add("dragover"); })
+);
+["dragleave","drop"].forEach(ev =>
+  dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove("dragover"); })
+);
+dropZone.addEventListener("drop", e => {
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+fileInput.addEventListener("change", () => {
+  if (fileInput.files[0]) handleFile(fileInput.files[0]);
+});
+
+document.getElementById("downloadCsv").addEventListener("click", () => {
+  if (lastOutput) downloadBlob(lastOutput.csv, `${lastOutput.baseName}_quickbooks.csv`, "text/csv");
+});
+document.getElementById("downloadReport").addEventListener("click", () => {
+  if (lastOutput) downloadBlob(lastOutput.report, `${lastOutput.baseName}_quickbooks_report.txt`, "text/plain");
+});
+document.getElementById("reset").addEventListener("click", reset);
+
+function showBanner(kind, msg) {
+  banner.className = `banner ${kind}`;
+  banner.textContent = msg;
+  banner.classList.remove("hidden");
+}
+function clearBanner() { banner.classList.add("hidden"); }
+
+function reset() {
+  lastOutput = null;
+  fileInput.value = "";
+  results.classList.add("hidden");
+  clearBanner();
+}
+
+async function handleFile(file) {
+  clearBanner();
+  try {
+    const text = await file.text();
+    const stripeTxs = parseStripeCSV(text);
+    if (stripeTxs.length === 0) {
+      throw new Error("No valid Stripe transactions found. Check the column names and row format.");
+    }
+    const qbTxs = convertToQuickBooks(stripeTxs);
+    const csv = qbCSV(qbTxs);
+    const report = summaryReport(stripeTxs);
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "stripe";
+    lastOutput = { csv, report, baseName };
+
+    renderResults(stripeTxs, qbTxs, report);
+    results.classList.remove("hidden");
+    results.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    showBanner("error", `Error: ${err.message}`);
+    results.classList.add("hidden");
+  }
+}
+
+function renderResults(stripeTxs, qbTxs, report) {
+  const totalGross = stripeTxs.reduce((a, t) => a + t.amount, 0);
+  const totalFees = stripeTxs.reduce((a, t) => a + t.fee, 0);
+  const totalNet = stripeTxs.reduce((a, t) => a + t.net, 0);
+  summaryEl.innerHTML = "";
+  const stats = [
+    ["Stripe Transactions", stripeTxs.length.toString()],
+    ["QuickBooks Entries", qbTxs.length.toString()],
+    ["Total Gross", `$${totalGross.toFixed(2)}`],
+    ["Total Fees", `$${totalFees.toFixed(2)}`],
+    ["Total Net", `$${totalNet.toFixed(2)}`],
+  ];
+  for (const [label, value] of stats) {
+    const div = document.createElement("div");
+    div.className = "stat";
+    div.innerHTML = `<div class="label"></div><div class="value"></div>`;
+    div.querySelector(".label").textContent = label;
+    div.querySelector(".value").textContent = value;
+    summaryEl.appendChild(div);
+  }
+
+  // Strip the title + totals block from the report to show just the breakdown.
+  const breakdownStart = report.indexOf("Transaction Breakdown by Type:");
+  breakdownEl.textContent = breakdownStart >= 0 ? report.slice(breakdownStart) : report;
+
+  previewBody.innerHTML = "";
+  const shown = qbTxs.slice(0, PREVIEW_LIMIT);
+  for (const r of shown) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td></td><td></td><td class="amount${r.amount < 0 ? " neg" : ""}"></td><td></td><td></td><td></td>`;
+    const tds = tr.children;
+    tds[0].textContent = formatMMDDYYYY(r.date);
+    tds[1].textContent = r.description;
+    tds[2].textContent = r.amount.toFixed(2);
+    tds[3].textContent = r.category;
+    tds[4].textContent = r.account;
+    tds[5].textContent = r.memo;
+    previewBody.appendChild(tr);
+  }
+  previewNote.textContent = qbTxs.length > PREVIEW_LIMIT
+    ? `(showing first ${PREVIEW_LIMIT} of ${qbTxs.length} entries)`
+    : `(${qbTxs.length} entries)`;
+}
+
+function downloadBlob(content, filename, mime) {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+</script>
+</body>
+</html>
