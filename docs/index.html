@@ -177,7 +177,7 @@
 <script>
 "use strict";
 
-// ---------- CSV parsing (quote-aware, matches Swift parseCSVLine semantics) ----------
+// Quote-aware CSV line parser matching Swift parseCSVLine semantics.
 function parseCSVLine(line) {
   const values = [];
   let cur = "";
@@ -198,11 +198,10 @@ function parseCSVLine(line) {
 }
 
 function parseStripeCSV(text) {
-  // Strip UTF-8 BOM if present.
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const lines = text.split(/\r?\n/).filter(l => l.length > 0);
   if (lines.length === 0) throw new Error("Empty file");
-  const headers = lines[0].split(",").map(h => h.trim());
+  const headers = parseCSVLine(lines[0]);
   const required = ["id","created","amount","fee","net","currency","type","description"];
   for (const r of required) {
     if (!headers.includes(r)) {
@@ -211,15 +210,18 @@ function parseStripeCSV(text) {
   }
 
   const transactions = [];
+  let skippedBadColumns = 0;
+  let skippedBadFields = 0;
   for (let i = 1; i < lines.length; i++) {
     const values = parseCSVLine(lines[i]);
-    if (values.length !== headers.length) continue;
+    if (values.length !== headers.length) { skippedBadColumns++; continue; }
     const row = {};
     for (let j = 0; j < headers.length; j++) row[headers[j]] = values[j];
     const tx = buildStripeTx(row);
     if (tx) transactions.push(tx);
+    else skippedBadFields++;
   }
-  return transactions;
+  return { transactions, skippedBadColumns, skippedBadFields };
 }
 
 function buildStripeTx(row) {
@@ -245,11 +247,16 @@ function buildStripeTx(row) {
 }
 
 // "yyyy-MM-dd HH:mm:ss" in local time, matching Swift's default DateFormatter timezone.
+// Range-checks each component so out-of-range inputs (e.g. "2025-02-30") don't get
+// silently normalized by Date and produce wrong dates in financial output.
 function parseStripeDate(s) {
   if (!s) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(s.trim());
   if (!m) return null;
-  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  const [Y, Mo, D, H, Mi, S] = [+m[1], +m[2], +m[3], +m[4], +m[5], +m[6]];
+  if (Mo < 1 || Mo > 12 || D < 1 || D > 31 || H > 23 || Mi > 59 || S > 59) return null;
+  const d = new Date(Y, Mo - 1, D, H, Mi, S);
+  if (d.getFullYear() !== Y || d.getMonth() !== Mo - 1 || d.getDate() !== D) return null;
   return isNaN(d.getTime()) ? null : d;
 }
 
@@ -260,7 +267,6 @@ function formatMMDDYYYY(d) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
-// ---------- Conversion ----------
 function categorize(type) {
   switch ((type || "").toLowerCase()) {
     case "charge": return "Sales Income";
@@ -285,6 +291,8 @@ function convertToQuickBooks(stripeTxs) {
       account: "Stripe",
       memo: `Stripe Transaction ID: ${s.id}`,
     });
+    // Fees emit as a separate negative QB entry so income and processing costs
+    // reconcile to distinct categories. Matches Swift convertStripeToQuickBooks.
     if (s.fee > 0) {
       out.push({
         date: s.created,
@@ -300,8 +308,7 @@ function convertToQuickBooks(stripeTxs) {
 }
 
 function qbCSV(rows) {
-  const headers = ["Date","Description","Amount","Category","Account","Memo"];
-  let out = headers.join(",") + "\n";
+  const lines = ["Date,Description,Amount,Category,Account,Memo"];
   for (const r of rows) {
     const fields = [
       formatMMDDYYYY(r.date),
@@ -311,40 +318,49 @@ function qbCSV(rows) {
       r.account,
       r.memo || "",
     ];
-    out += fields.map(v => `"${v}"`).join(",") + "\n";
+    lines.push(fields.map(v => `"${v}"`).join(","));
   }
-  return out;
+  return lines.join("\n") + "\n";
 }
 
-function summaryReport(stripeTxs) {
-  const totalGross = stripeTxs.reduce((a, t) => a + t.amount, 0);
-  const totalFees = stripeTxs.reduce((a, t) => a + t.fee, 0);
-  const totalNet = stripeTxs.reduce((a, t) => a + t.net, 0);
-  const grouped = new Map();
+function summarize(stripeTxs) {
+  const totals = { gross: 0, fees: 0, net: 0 };
+  const byType = new Map();
   for (const t of stripeTxs) {
-    if (!grouped.has(t.type)) grouped.set(t.type, []);
-    grouped.get(t.type).push(t);
+    totals.gross += t.amount;
+    totals.fees += t.fee;
+    totals.net += t.net;
+    const agg = byType.get(t.type) || { count: 0, gross: 0, fees: 0 };
+    agg.count++;
+    agg.gross += t.amount;
+    agg.fees += t.fee;
+    byType.set(t.type, agg);
   }
-  const types = [...grouped.keys()].sort();
-  let breakdown = "";
-  for (const type of types) {
-    const list = grouped.get(type);
-    const g = list.reduce((a, t) => a + t.amount, 0);
-    const f = list.reduce((a, t) => a + t.fee, 0);
-    breakdown += `\n- ${type}: ${list.length} transactions, $${g.toFixed(2)} gross, $${f.toFixed(2)} fees`;
-  }
+  const breakdown = [...byType.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([type, agg]) => ({ type, ...agg }));
+  return { totals, breakdown };
+}
+
+function formatBreakdown(breakdown) {
+  return breakdown
+    .map(b => `- ${b.type}: ${b.count} transactions, $${b.gross.toFixed(2)} gross, $${b.fees.toFixed(2)} fees`)
+    .join("\n");
+}
+
+function summaryReportText(stripeTxs, summary) {
   return `Stripe to QuickBooks Conversion Summary
 =====================================
 
 Total Transactions: ${stripeTxs.length}
-Total Gross Amount: $${totalGross.toFixed(2)}
-Total Fees: $${totalFees.toFixed(2)}
-Total Net Amount: $${totalNet.toFixed(2)}
+Total Gross Amount: $${summary.totals.gross.toFixed(2)}
+Total Fees: $${summary.totals.fees.toFixed(2)}
+Total Net Amount: $${summary.totals.net.toFixed(2)}
 
-Transaction Breakdown by Type:${breakdown}`;
+Transaction Breakdown by Type:
+${formatBreakdown(summary.breakdown)}`;
 }
 
-// ---------- UI ----------
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
 const banner = document.getElementById("banner");
@@ -355,7 +371,7 @@ const previewBody = document.querySelector("#preview tbody");
 const previewNote = document.getElementById("previewNote");
 const PREVIEW_LIMIT = 50;
 
-let lastOutput = null; // { csv, report, baseName }
+let lastOutput = null;
 
 ["dragenter","dragover"].forEach(ev =>
   dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add("dragover"); })
@@ -364,8 +380,20 @@ let lastOutput = null; // { csv, report, baseName }
   dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove("dragover"); })
 );
 dropZone.addEventListener("drop", e => {
-  const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) handleFile(f);
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (!files || files.length === 0) return;
+  if (files.length > 1) {
+    showError("Please drop a single CSV file at a time.");
+    return;
+  }
+  const f = files[0];
+  const name = f.name.toLowerCase();
+  const looksLikeCSV = name.endsWith(".csv") || f.type === "text/csv" || f.type === "application/vnd.ms-excel";
+  if (!looksLikeCSV) {
+    showError(`"${f.name}" doesn't look like a CSV file. Please drop a .csv file exported from Stripe.`);
+    return;
+  }
+  handleFile(f);
 });
 fileInput.addEventListener("change", () => {
   if (fileInput.files[0]) handleFile(fileInput.files[0]);
@@ -379,8 +407,13 @@ document.getElementById("downloadReport").addEventListener("click", () => {
 });
 document.getElementById("reset").addEventListener("click", reset);
 
-function showBanner(kind, msg) {
-  banner.className = `banner ${kind}`;
+function showError(msg) {
+  banner.className = "banner error";
+  banner.textContent = msg;
+  banner.classList.remove("hidden");
+}
+function showInfo(msg) {
+  banner.className = "banner info";
   banner.textContent = msg;
   banner.classList.remove("hidden");
 }
@@ -397,64 +430,90 @@ async function handleFile(file) {
   clearBanner();
   try {
     const text = await file.text();
-    const stripeTxs = parseStripeCSV(text);
+    const parsed = parseStripeCSV(text);
+    const stripeTxs = parsed.transactions;
     if (stripeTxs.length === 0) {
       throw new Error("No valid Stripe transactions found. Check the column names and row format.");
     }
     const qbTxs = convertToQuickBooks(stripeTxs);
+    const summary = summarize(stripeTxs);
     const csv = qbCSV(qbTxs);
-    const report = summaryReport(stripeTxs);
+    const report = summaryReportText(stripeTxs, summary);
     const baseName = file.name.replace(/\.[^.]+$/, "") || "stripe";
     lastOutput = { csv, report, baseName };
 
-    renderResults(stripeTxs, qbTxs, report);
+    renderResults(stripeTxs, qbTxs, summary);
     results.classList.remove("hidden");
     results.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    const skipped = parsed.skippedBadColumns + parsed.skippedBadFields;
+    if (skipped > 0) {
+      const total = skipped + stripeTxs.length;
+      showInfo(`Skipped ${skipped} of ${total} rows with malformed columns or unparseable dates/amounts. The other ${stripeTxs.length} were converted successfully.`);
+    }
   } catch (err) {
-    showBanner("error", `Error: ${err.message}`);
+    console.error("File processing failed:", err);
+    let msg;
+    if (err && err.name === "NotReadableError") {
+      msg = "Could not read that file. If you dropped a folder, drop a single .csv file instead.";
+    } else if (err && err.name === "NotFoundError") {
+      msg = "That file is no longer available. Try selecting it again.";
+    } else {
+      msg = `Error: ${err.message || "Unexpected error. See browser console for details."}`;
+    }
+    showError(msg);
     results.classList.add("hidden");
   }
 }
 
-function renderResults(stripeTxs, qbTxs, report) {
-  const totalGross = stripeTxs.reduce((a, t) => a + t.amount, 0);
-  const totalFees = stripeTxs.reduce((a, t) => a + t.fee, 0);
-  const totalNet = stripeTxs.reduce((a, t) => a + t.net, 0);
-  summaryEl.innerHTML = "";
-  const stats = [
-    ["Stripe Transactions", stripeTxs.length.toString()],
-    ["QuickBooks Entries", qbTxs.length.toString()],
-    ["Total Gross", `$${totalGross.toFixed(2)}`],
-    ["Total Fees", `$${totalFees.toFixed(2)}`],
-    ["Total Net", `$${totalNet.toFixed(2)}`],
+function makeStatCard(label, value) {
+  const card = document.createElement("div");
+  card.className = "stat";
+  const l = document.createElement("div");
+  l.className = "label";
+  l.textContent = label;
+  const v = document.createElement("div");
+  v.className = "value";
+  v.textContent = value;
+  card.append(l, v);
+  return card;
+}
+
+function makePreviewRow(r) {
+  const tr = document.createElement("tr");
+  const cells = [
+    formatMMDDYYYY(r.date),
+    r.description,
+    r.amount.toFixed(2),
+    r.category,
+    r.account,
+    r.memo,
   ];
-  for (const [label, value] of stats) {
-    const div = document.createElement("div");
-    div.className = "stat";
-    div.innerHTML = `<div class="label"></div><div class="value"></div>`;
-    div.querySelector(".label").textContent = label;
-    div.querySelector(".value").textContent = value;
-    summaryEl.appendChild(div);
-  }
+  cells.forEach((text, i) => {
+    const td = document.createElement("td");
+    if (i === 2) {
+      td.className = r.amount < 0 ? "amount neg" : "amount";
+    }
+    td.textContent = text;
+    tr.appendChild(td);
+  });
+  return tr;
+}
 
-  // Strip the title + totals block from the report to show just the breakdown.
-  const breakdownStart = report.indexOf("Transaction Breakdown by Type:");
-  breakdownEl.textContent = breakdownStart >= 0 ? report.slice(breakdownStart) : report;
+function renderResults(stripeTxs, qbTxs, summary) {
+  const { totals, breakdown } = summary;
+  summaryEl.replaceChildren(
+    makeStatCard("Stripe Transactions", String(stripeTxs.length)),
+    makeStatCard("QuickBooks Entries", String(qbTxs.length)),
+    makeStatCard("Total Gross", `$${totals.gross.toFixed(2)}`),
+    makeStatCard("Total Fees", `$${totals.fees.toFixed(2)}`),
+    makeStatCard("Total Net", `$${totals.net.toFixed(2)}`),
+  );
 
-  previewBody.innerHTML = "";
+  breakdownEl.textContent = `Transaction Breakdown by Type:\n${formatBreakdown(breakdown)}`;
+
   const shown = qbTxs.slice(0, PREVIEW_LIMIT);
-  for (const r of shown) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td></td><td></td><td class="amount${r.amount < 0 ? " neg" : ""}"></td><td></td><td></td><td></td>`;
-    const tds = tr.children;
-    tds[0].textContent = formatMMDDYYYY(r.date);
-    tds[1].textContent = r.description;
-    tds[2].textContent = r.amount.toFixed(2);
-    tds[3].textContent = r.category;
-    tds[4].textContent = r.account;
-    tds[5].textContent = r.memo;
-    previewBody.appendChild(tr);
-  }
+  previewBody.replaceChildren(...shown.map(makePreviewRow));
   previewNote.textContent = qbTxs.length > PREVIEW_LIMIT
     ? `(showing first ${PREVIEW_LIMIT} of ${qbTxs.length} entries)`
     : `(${qbTxs.length} entries)`;
