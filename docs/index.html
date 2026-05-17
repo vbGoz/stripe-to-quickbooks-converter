@@ -140,7 +140,7 @@
   <div class="panel">
     <label for="fileInput" class="drop" id="dropZone">
       <strong>Drop a Stripe CSV here, or click to choose a file</strong>
-      <small>Expected columns: id, created, amount, currency, fee, net, type, description, source_id, customer_id</small>
+      <small>Works with Stripe Dashboard exports (Balance Transactions, Custom Payments, etc.) — Title Case or lowercase column names.</small>
       <input type="file" id="fileInput" accept=".csv,text/csv">
     </label>
   </div>
@@ -197,11 +197,61 @@ function parseCSVLine(line) {
   return values;
 }
 
+// Stripe's Dashboard exports come in several flavors with different column-name
+// conventions (lowercase API style vs Title Case Custom Export, "fee" vs "Fees",
+// "Created" vs "Created (UTC)", etc.). Normalize each header to a canonical key
+// so the rest of the pipeline doesn't need to know which export format it has.
+// Identity mappings are omitted: canonicalHeaders falls back to the normalized
+// name when no alias entry exists. Invariant: every value in this table (and
+// every canonical name used by the pipeline) must already be in normalizeHeader
+// form — lowercase, trimmed, with whitespace collapsed to underscores. The
+// "|| n" fallback assumes canonical names are fixed points of normalizeHeader.
+const HEADER_CANONICAL = {
+  balance_transaction_id: "id",
+  created_date: "created",
+  date: "created",
+  fees: "fee",
+  source: "source_id",
+  customer: "customer_id",
+};
+
+// https://stripe.com/docs/currencies#zero-decimal — these currencies ship as
+// integer minor units that ARE the major-unit value (5000 JPY = 5000 yen, not
+// 50 yen). The cents/dollars heuristic in parseStripeAmount must skip the /100
+// step for these, otherwise output is silently 100x wrong.
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "bif","clp","djf","gnf","jpy","kmf","krw","mga","pyg",
+  "rwf","ugx","vnd","vuv","xaf","xof","xpf",
+]);
+
+function normalizeHeader(h) {
+  return h
+    .toLowerCase()
+    .trim()
+    .replace(/\s*\((?:utc|gmt)\)\s*$/, "")
+    .replace(/\s+/g, "_");
+}
+
+function canonicalHeaders(rawHeaders) {
+  const out = rawHeaders.map(h => {
+    const n = normalizeHeader(h);
+    return HEADER_CANONICAL[n] || n;
+  });
+  const seen = new Map();
+  out.forEach((h, i) => {
+    if (seen.has(h)) {
+      throw new Error(`Duplicate column after normalization: "${rawHeaders[seen.get(h)]}" and "${rawHeaders[i]}" both map to "${h}". Remove or rename one.`);
+    }
+    seen.set(h, i);
+  });
+  return out;
+}
+
 function parseStripeCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const lines = text.split(/\r?\n/).filter(l => l.length > 0);
   if (lines.length === 0) throw new Error("Empty file");
-  const headers = parseCSVLine(lines[0]);
+  const headers = canonicalHeaders(parseCSVLine(lines[0]));
   const required = ["id","created","amount","fee","net","currency","type","description"];
   for (const r of required) {
     if (!headers.includes(r)) {
@@ -226,19 +276,19 @@ function parseStripeCSV(text) {
 
 function buildStripeTx(row) {
   const created = parseStripeDate(row.created);
-  const amount = Number(row.amount);
-  const fee = Number(row.fee);
-  const net = Number(row.net);
+  const amount = parseStripeAmount(row.amount, row.currency);
+  const fee = parseStripeAmount(row.fee, row.currency);
+  const net = parseStripeAmount(row.net, row.currency);
   if (!created || !Number.isFinite(amount) || !Number.isFinite(fee) || !Number.isFinite(net)) {
     return null;
   }
   return {
     id: row.id,
     created,
-    amount: amount / 100,
+    amount,
     currency: row.currency,
-    fee: fee / 100,
-    net: net / 100,
+    fee,
+    net,
     type: row.type,
     description: row.description,
     sourceId: row.source_id || null,
@@ -246,14 +296,46 @@ function buildStripeTx(row) {
   };
 }
 
-// "yyyy-MM-dd HH:mm:ss" in local time, matching Swift's default DateFormatter timezone.
-// Range-checks each component so out-of-range inputs (e.g. "2025-02-30") don't get
-// silently normalized by Date and produce wrong dates in financial output.
+// Stripe ships two amount formats depending on export type:
+//   - Custom Export / Dashboard: dollars with decimal ("50.00", "1.75")
+//   - Balance Transactions API:  integer minor units ("5000" cents, or "5000" yen)
+// Heuristic from stripe_converter_v2.swift: a whole number > 100 with no
+// decimal point is almost certainly cents; everything else is dollars. This
+// breaks down at the [-$1.00, $1.00] cents-formatted boundary (e.g. "100"
+// reads as $100 even when meant as 100 cents = $1.00) — accepted to keep
+// parity with the Mac app. Zero-decimal currencies (JPY, KRW, etc.) skip the
+// /100 step entirely; without this they'd be 100x too small.
+function parseStripeAmount(s, currency) {
+  if (s == null || s === "") return NaN;
+  const trimmed = String(s).trim();
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return NaN;
+  if (currency && ZERO_DECIMAL_CURRENCIES.has(currency.toLowerCase())) return n;
+  if (Math.abs(n) > 100 && !trimmed.includes(".")) return n / 100;
+  return n;
+}
+
+// Local-time parsing matches Swift's default DateFormatter timezone. The
+// component round-trip on `getFullYear/getMonth/getDate` is what catches inputs
+// like "2025-02-30" that Date silently normalizes to March 2nd, which would
+// put a transaction in the wrong month in financial output.
+const DATE_PATTERNS = [
+  [/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/,
+   m => [+m[1], +m[2], +m[3], +m[4], +m[5], +m[6] || 0]],
+  [/^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/,
+   m => [+m[3], +m[1], +m[2], +m[4], +m[5], +m[6] || 0]],
+];
+
 function parseStripeDate(s) {
   if (!s) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(s.trim());
-  if (!m) return null;
-  const [Y, Mo, D, H, Mi, S] = [+m[1], +m[2], +m[3], +m[4], +m[5], +m[6]];
+  const trimmed = String(s).trim();
+  let parts = null;
+  for (const [re, map] of DATE_PATTERNS) {
+    const m = re.exec(trimmed);
+    if (m) { parts = map(m); break; }
+  }
+  if (!parts) return null;
+  const [Y, Mo, D, H, Mi, S] = parts;
   if (Mo < 1 || Mo > 12 || D < 1 || D > 31 || H > 23 || Mi > 59 || S > 59) return null;
   const d = new Date(Y, Mo - 1, D, H, Mi, S);
   if (d.getFullYear() !== Y || d.getMonth() !== Mo - 1 || d.getDate() !== D) return null;
@@ -433,7 +515,10 @@ async function handleFile(file) {
     const parsed = parseStripeCSV(text);
     const stripeTxs = parsed.transactions;
     if (stripeTxs.length === 0) {
-      throw new Error("No valid Stripe transactions found. Check the column names and row format.");
+      const skipped = parsed.skippedBadColumns + parsed.skippedBadFields;
+      throw new Error(skipped > 0
+        ? `No valid Stripe transactions found. ${skipped} rows were skipped due to unparseable dates, amounts, or column mismatches. Check the date format and that amounts are numeric.`
+        : "No valid Stripe transactions found. Check the column names and row format.");
     }
     const qbTxs = convertToQuickBooks(stripeTxs);
     const summary = summarize(stripeTxs);
